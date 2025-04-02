@@ -5,22 +5,44 @@ let lastUpdateTime = 0;
 let currentElapsed = 0;
 let isWindowFocused = true;
 let blurTimeout = null;
+let isExtensionValid = true;
 
 const currentHostname = new URL(location.href).hostname;
 
+// Handle extension context invalidation
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (chrome.runtime.lastError) {
+    isExtensionValid = false;
+    stopDisplay();
+    if (timerBox) {
+      timerBox.remove();
+      timerBox = null;
+    }
+    return;
+  }
+  return true;
+});
+
 // Handle window focus/blur events
 window.addEventListener('focus', () => {
+  if (!isExtensionValid) return;
+  
   isWindowFocused = true;
   if (document.visibilityState === 'visible') {
     startDisplay();
     chrome.runtime.sendMessage({ 
       type: 'start-tracking', 
       url: location.href 
+    }).catch(() => {
+      isExtensionValid = false;
+      stopDisplay();
     });
   }
 });
 
 window.addEventListener('blur', () => {
+  if (!isExtensionValid) return;
+
   // Clear any existing timeout
   if (blurTimeout) {
     clearTimeout(blurTimeout);
@@ -37,6 +59,9 @@ window.addEventListener('blur', () => {
       chrome.runtime.sendMessage({ 
         type: 'stop-tracking', 
         url: location.href 
+      }).catch(() => {
+        isExtensionValid = false;
+        stopDisplay();
       });
     }
   }, 100); // 100ms should be enough to catch quick focus/blur from popup
@@ -44,6 +69,8 @@ window.addEventListener('blur', () => {
 
 // Initialize display and start tracking if site is in watchlist
 chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
+  if (!isExtensionValid) return;
+  
   if (watchlist.includes(currentHostname)) {
     createTimerDisplay();
     // Only start if both window and document are visible
@@ -52,6 +79,9 @@ chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
       chrome.runtime.sendMessage({ 
         type: 'start-tracking', 
         url: location.href 
+      }).catch(() => {
+        isExtensionValid = false;
+        stopDisplay();
       });
     } else {
       updateTimerDisplay();
@@ -61,30 +91,44 @@ chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
 
 // Handle visibility changes
 document.addEventListener('visibilitychange', () => {
+  if (!isExtensionValid) return;
+  
   if (document.visibilityState === 'visible' && isWindowFocused) {
     startDisplay();
     chrome.runtime.sendMessage({ 
       type: 'start-tracking', 
       url: location.href 
+    }).catch(() => {
+      isExtensionValid = false;
+      stopDisplay();
     });
   } else {
     stopDisplay();
     chrome.runtime.sendMessage({ 
       type: 'stop-tracking', 
       url: location.href 
+    }).catch(() => {
+      isExtensionValid = false;
+      stopDisplay();
     });
   }
 });
 
 // Start display updates
 function startDisplay() {
-  if (isDisplaying) return;
+  if (isDisplaying || !isExtensionValid) return;
   
   isDisplaying = true;
   lastUpdateTime = Date.now();
   
   // Get initial state from background
   chrome.runtime.sendMessage({ type: 'get-timer-state' }, (response) => {
+    if (chrome.runtime.lastError) {
+      isExtensionValid = false;
+      stopDisplay();
+      return;
+    }
+    
     if (response?.status === 'success' && response.timerInfo) {
       currentElapsed = response.timerInfo.elapsed;
       updateTimerDisplay();
@@ -110,6 +154,8 @@ function stopDisplay() {
 
 // Listen for watchlist changes
 chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (!isExtensionValid) return;
+  
   if (namespace === 'local' && changes.watchlist) {
     const newWatchlist = changes.watchlist.newValue || [];
     const isWatched = newWatchlist.includes(currentHostname);
@@ -122,6 +168,9 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
         chrome.runtime.sendMessage({ 
           type: 'start-tracking', 
           url: location.href 
+        }).catch(() => {
+          isExtensionValid = false;
+          stopDisplay();
         });
       } else {
         updateTimerDisplay();
@@ -131,6 +180,9 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
       chrome.runtime.sendMessage({ 
         type: 'stop-tracking', 
         url: location.href 
+      }).catch(() => {
+        isExtensionValid = false;
+        stopDisplay();
       });
       if (timerBox.parentNode) {
         timerBox.parentNode.removeChild(timerBox);
@@ -148,9 +200,15 @@ function startDisplayTimer() {
   }
   
   displayInterval = setInterval(() => {
-    if (isDisplaying) {
+    if (isDisplaying && isExtensionValid) {
       // Get latest state from background
       chrome.runtime.sendMessage({ type: 'get-timer-state' }, (response) => {
+        if (chrome.runtime.lastError) {
+          isExtensionValid = false;
+          stopDisplay();
+          return;
+        }
+        
         if (response?.status === 'success' && response.timerInfo) {
           currentElapsed = response.timerInfo.elapsed;
           updateTimerDisplay();
@@ -207,9 +265,14 @@ function formatTime(s) {
 
 // Handle page unload
 window.addEventListener('beforeunload', () => {
+  if (!isExtensionValid) return;
+  
   stopDisplay();
   chrome.runtime.sendMessage({ 
     type: 'stop-tracking', 
     url: location.href 
+  }).catch(() => {
+    isExtensionValid = false;
+    stopDisplay();
   });
 });

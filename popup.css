@@ -216,6 +216,7 @@ footer {
   justify-content: center;
   color: var(--text-secondary);
   transition: transform 0.2s;
+  padding: 0;
 }
 
 .toggle-btn:hover {
@@ -224,8 +225,10 @@ footer {
 
 .toggle-btn .arrow {
   display: block;
-  font-size: 14px;
+  font-size: 16px;
+  line-height: 1;
   transition: transform 0.2s;
+  transform-origin: center;
 }
 
 .watchlist-container.collapsed .arrow {
