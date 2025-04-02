@@ -35,19 +35,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const hostname = new URL(msg.url).hostname;
 
     // If we already had a timer for this tab, store any time that might have accumulated
-    if (activeTimers[tabId] && activeTimers[tabId].isActive) {
-      const elapsed = calculateElapsedTime(activeTimers[tabId].startTime);
-      if (elapsed > 0) {
-        storeTime(activeTimers[tabId].hostname, elapsed);
+    if (activeTimers[tabId]) {
+      if (activeTimers[tabId].isActive && activeTimers[tabId].startTime) {
+        const elapsed = calculateElapsedTime(activeTimers[tabId].startTime);
+        if (elapsed > 0) {
+          storeTime(activeTimers[tabId].hostname, elapsed);
+        }
       }
     }
 
     // Create or update timer for this tab
     activeTimers[tabId] = {
       hostname,
-      startTime: Date.now(), // Use millisecond precision
+      startTime: Date.now(),
       isActive: true
     };
+    
+    // Ensure this hostname is stored in sites even if there's no time yet
+    ensureHostnameInStorage(hostname);
+    
+    sendResponse({ status: 'tracking-started' });
   }
 
   // Stop tracking when tab becomes inactive
@@ -63,28 +70,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         storeTime(timer.hostname, elapsed);
       }
       
-      // Mark as inactive
+      // Mark as inactive and clear start time
       timer.isActive = false;
+      timer.startTime = null;
+      
+      sendResponse({ status: 'tracking-stopped' });
     }
   }
   
-  // Get tab session time (for content.js display)
-  if (msg.type === 'get-tab-session-time') {
-    if (!sender || !sender.tab) {
-      sendResponse({ seconds: 0 });
-      return true;
-    }
-    
-    const tabId = sender.tab.id;
-    const timer = activeTimers[tabId];
-    
-    if (timer && timer.isActive) {
-      // For active timers, calculate current elapsed time
-      const elapsed = Math.floor((Date.now() - timer.startTime) / 1000);
-      sendResponse({ seconds: elapsed });
-    } else {
-      sendResponse({ seconds: 0 });
-    }
+  // Special message just to force sync all active timers (used by popup)
+  if (msg.type === 'sync-all-timers') {
+    syncActiveTimers().then(() => {
+      sendResponse({ status: 'synced' });
+    });
     return true;
   }
   
@@ -93,23 +91,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     syncActiveTimers().then(() => {
       sendResponse({ updated: true });
     });
-    return true; // Required for asynchronous response
-  }
-  
-  // Get total site time for a specific hostname
-  if (msg.type === 'get-site-total-time') {
-    chrome.storage.local.get(['sites'], ({ sites = {} }) => {
-      const hostname = msg.hostname;
-      const today = new Date().toISOString().split('T')[0];
-      
-      const totalTime = sites[hostname]?.[today] || 0;
-      sendResponse({ totalTime });
-    });
     return true;
   }
 });
 
-// Handle tab close events - important for accurate tracking
+// Ensure a hostname exists in storage
+function ensureHostnameInStorage(hostname) {
+  chrome.storage.local.get(['sites'], ({ sites = {} }) => {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Initialize data structure if needed
+    if (!sites[hostname]) {
+      sites[hostname] = {};
+    }
+    if (sites[hostname][today] === undefined) {
+      sites[hostname][today] = 0;
+      chrome.storage.local.set({ sites });
+    }
+  });
+}
+
+// Handle tab close events
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (activeTimers[tabId] && activeTimers[tabId].isActive) {
     const timer = activeTimers[tabId];
@@ -123,41 +125,30 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Handle tab activation (switching between tabs)
+// Handle tab switching (activated)
 chrome.tabs.onActivated.addListener((activeInfo) => {
   const tabId = activeInfo.tabId;
   
-  // Pause all other active timers for the same hostname
+  // Pause all other timers 
   for (const id in activeTimers) {
-    if (id != tabId && !activeTimers[id].paused) {
+    if (id != tabId && activeTimers[id].isActive) {
       const timer = activeTimers[id];
-      const elapsed = Math.floor((Date.now() - timer.startTime) / 1000);
+      const elapsed = calculateElapsedTime(timer.startTime);
       
       if (elapsed > 0) {
         storeTime(timer.hostname, elapsed);
       }
       
       // Mark as paused
-      timer.paused = true;
-    }
-  }
-  
-  // If this tab has a timer, make it the active one for its hostname
-  if (activeTimers[tabId]) {
-    const hostname = activeTimers[tabId].hostname;
-    activeHostnames[hostname] = tabId;
-    
-    // If it was paused, resume it
-    if (activeTimers[tabId].paused) {
-      activeTimers[tabId].startTime = Date.now();
-      activeTimers[tabId].paused = false;
+      timer.isActive = false;
+      timer.startTime = null;
     }
   }
 });
 
-// Calculate elapsed time with millisecond precision
+// Calculate elapsed time in seconds with millisecond precision
 function calculateElapsedTime(startTime) {
-  // Get precise number of seconds with decimal precision
+  if (!startTime) return 0;
   const elapsedMs = Date.now() - startTime;
   return elapsedMs / 1000; // Return seconds with decimal precision
 }
@@ -169,7 +160,7 @@ async function syncActiveTimers() {
   
   for (const tabId in activeTimers) {
     const timer = activeTimers[tabId];
-    if (timer && timer.isActive) {
+    if (timer && timer.isActive && timer.startTime) {
       const elapsed = calculateElapsedTime(timer.startTime);
       
       if (elapsed > 0) {
@@ -189,6 +180,11 @@ async function syncActiveTimers() {
 
 // Store time in persistent storage with improved precision
 function storeTime(hostname, seconds, callback) {
+  if (!hostname || seconds <= 0) {
+    if (callback) callback();
+    return;
+  }
+  
   chrome.storage.local.get(['sites'], ({ sites = {} }) => {
     const now = new Date();
     const today = now.toISOString().split('T')[0];
@@ -197,11 +193,11 @@ function storeTime(hostname, seconds, callback) {
     if (!sites[hostname]) {
       sites[hostname] = {};
     }
-    if (!sites[hostname][today]) {
+    if (sites[hostname][today] === undefined) {
       sites[hostname][today] = 0;
     }
     
-    // Add the new time to the total - use full precision and then floor when showing
+    // Add the new time to the total
     sites[hostname][today] += seconds;
     
     // Store back to storage
@@ -209,5 +205,5 @@ function storeTime(hostname, seconds, callback) {
   });
 }
 
-// Add periodic sync to ensure data is saved even if user doesn't interact
-setInterval(syncActiveTimers, 30000); // Sync every 30 seconds
+// Add periodic sync to ensure data is saved regularly
+setInterval(syncActiveTimers, 5000); // Sync every 5 seconds

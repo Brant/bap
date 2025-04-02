@@ -14,9 +14,6 @@ chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       toggleBtn.classList.remove('remove');
     }
   });
-  
-  // Request background page to save current site tracking data
-  chrome.runtime.sendMessage({ type: 'get-latest-data' });
 });
 
 // Handle watchlist toggle button (collapse/expand)
@@ -79,8 +76,12 @@ timeBtns.forEach(btn => {
 // Request latest tracking data from background page and return a promise
 function requestLatestData() {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'get-latest-data' }, (response) => {
-      resolve(response && response.updated);
+    // Force a sync of all active timers before getting data
+    chrome.runtime.sendMessage({ type: 'sync-all-timers' }, (response) => {
+      // Give a little time for the sync to complete
+      setTimeout(() => {
+        resolve(true);
+      }, 200); // Wait 200ms to ensure sync completes
     });
   });
 }
@@ -301,17 +302,6 @@ function formatTime(seconds) {
   return `${days}d ${remainingHours}h ${remainingMinutes}m`;
 }
 
-// Set up storage change listener to refresh data when tracking updates happen
-chrome.storage.onChanged.addListener((changes, namespace) => {
-  if (namespace === 'local' && (changes.sites || changes.watchlist)) {
-    loadSummary();
-    
-    if (changes.watchlist) {
-      loadWatchlist();
-    }
-  }
-});
-
 // Add year option to time period buttons if not already present
 function ensureYearOption() {
   const timeSelector = document.querySelector('.time-selector');
@@ -344,5 +334,7 @@ async function initializePopup() {
 }
 
 // Start initialization when popup opens
-initializePopup();
+document.addEventListener('DOMContentLoaded', () => {
+  initializePopup();
+});
   
