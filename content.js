@@ -3,36 +3,72 @@ let timerBox;
 let isDisplaying = false;
 let lastUpdateTime = 0;
 let currentElapsed = 0;
+let isWindowFocused = true;
+let blurTimeout = null;
 
 const currentHostname = new URL(location.href).hostname;
+
+// Handle window focus/blur events
+window.addEventListener('focus', () => {
+  isWindowFocused = true;
+  if (document.visibilityState === 'visible') {
+    startDisplay();
+    chrome.runtime.sendMessage({ 
+      type: 'start-tracking', 
+      url: location.href 
+    });
+  }
+});
+
+window.addEventListener('blur', () => {
+  // Clear any existing timeout
+  if (blurTimeout) {
+    clearTimeout(blurTimeout);
+  }
+
+  // Set isWindowFocused to false immediately
+  isWindowFocused = false;
+
+  // Set a short timeout to check if this blur was from the extension popup
+  blurTimeout = setTimeout(() => {
+    // If we're still blurred after the timeout, it's a real blur event
+    if (!isWindowFocused) {
+      stopDisplay();
+      chrome.runtime.sendMessage({ 
+        type: 'stop-tracking', 
+        url: location.href 
+      });
+    }
+  }, 100); // 100ms should be enough to catch quick focus/blur from popup
+});
 
 // Initialize display and start tracking if site is in watchlist
 chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
   if (watchlist.includes(currentHostname)) {
     createTimerDisplay();
-    startDisplay();
-    // Start tracking immediately if the page is visible
-    if (document.visibilityState === 'visible') {
+    // Only start if both window and document are visible
+    if (document.visibilityState === 'visible' && isWindowFocused) {
+      startDisplay();
       chrome.runtime.sendMessage({ 
         type: 'start-tracking', 
         url: location.href 
       });
+    } else {
+      updateTimerDisplay();
     }
   }
 });
 
 // Handle visibility changes
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') {
+  if (document.visibilityState === 'visible' && isWindowFocused) {
     startDisplay();
-    // Tell background to start tracking
     chrome.runtime.sendMessage({ 
       type: 'start-tracking', 
       url: location.href 
     });
   } else {
     stopDisplay();
-    // Tell background to stop tracking
     chrome.runtime.sendMessage({ 
       type: 'stop-tracking', 
       url: location.href 
@@ -80,17 +116,18 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     
     if (isWatched && !timerBox) {
       createTimerDisplay();
-      startDisplay();
-      // Tell background to start tracking if page is visible
-      if (document.visibilityState === 'visible') {
+      // Only start if both window and document are visible
+      if (document.visibilityState === 'visible' && isWindowFocused) {
+        startDisplay();
         chrome.runtime.sendMessage({ 
           type: 'start-tracking', 
           url: location.href 
         });
+      } else {
+        updateTimerDisplay();
       }
     } else if (!isWatched && timerBox) {
       stopDisplay();
-      // Tell background to stop tracking
       chrome.runtime.sendMessage({ 
         type: 'stop-tracking', 
         url: location.href 
@@ -171,7 +208,6 @@ function formatTime(s) {
 // Handle page unload
 window.addEventListener('beforeunload', () => {
   stopDisplay();
-  // Tell background to stop tracking
   chrome.runtime.sendMessage({ 
     type: 'stop-tracking', 
     url: location.href 
