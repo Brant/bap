@@ -1,64 +1,13 @@
 let watchlist = {};
 let activeTimers = {};
 
-// Simple function to update the extension icon based on color scheme
-function updateIcon(isDarkMode) {
-  const iconPath = isDarkMode ? "icons/icon-darkmode.png" : "icons/icon-lightmode.png";
-  chrome.action.setIcon({ path: iconPath });
-}
-
-// Function to check dark mode using system color scheme
-function checkDarkMode() {
-  if (self.matchMedia) {
-    return self.matchMedia('(prefers-color-scheme: dark)').matches;
-  }
-  return false;
-}
-
 // Initial setup
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({ sites: {}, watchlist: [] });
-  // Default icon
-  updateIcon(false);
 });
 
-// Detect theme using content script that has access to window.matchMedia
-function detectThemeFromContent() {
-  // Create a content script that will check the theme and report back
-  chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-    if (tabs.length === 0) return;
-    
-    chrome.scripting.executeScript({
-      target: {tabId: tabs[0].id},
-      function: () => {
-        const isDarkMode = window.matchMedia && 
-                          window.matchMedia('(prefers-color-scheme: dark)').matches;
-        return isDarkMode;
-      }
-    }, (results) => {
-      if (chrome.runtime.lastError || !results || results.length === 0) {
-        // Default to light mode if we can't detect
-        updateIcon(false);
-        return;
-      }
-      
-      const isDarkMode = results[0].result;
-      updateIcon(isDarkMode);
-      
-      // Store the theme preference
-      chrome.storage.local.set({ isDarkMode });
-    });
-  });
-}
-
-// Listen for theme changes from content scripts
+// Listen for messages from content scripts and popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'theme-changed') {
-    updateIcon(msg.isDarkMode);
-    sendResponse({ status: 'updated' });
-    return true;
-  }
-  
   if (msg.type === 'toggle-watchlist') {
     chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
       const isInList = watchlist.includes(msg.url);
@@ -96,7 +45,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
   }
   
-  // New message type to get latest data before displaying in popup
+  // Get latest data before displaying in popup
   if (msg.type === 'get-latest-data') {
     // Sync all active timers to storage before responding
     syncActiveTimers().then(() => {

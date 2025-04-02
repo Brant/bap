@@ -14,18 +14,13 @@
     },
     "action": {
       "default_popup": "popup.html",
-      "default_icon": "icons/icon-lightmode.png"
+      "default_icon": "icons/icon.png"
     },
     "content_scripts": [
       {
         "matches": ["<all_urls>"],
         "js": ["content.js"],
         "css": ["style.css"]
-      },
-      {
-        "matches": ["<all_urls>"],
-        "js": ["theme-detector.js"],
-        "run_at": "document_start"
       }
     ]
   }
