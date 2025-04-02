@@ -60,8 +60,14 @@ function startTimer() {
   
   timerInterval = setInterval(() => {
     seconds++;
-    if (timerBox) timerBox.innerText = formatTime(seconds);
+    if (timerBox) {
+      updateTimerDisplay();
+    }
   }, 1000);
+}
+
+function updateTimerDisplay() {
+  timerBox.innerHTML = `<span style="font-weight: 500; margin-right: 5px;">Just Be Aware:</span>${formatTime(seconds)}`;
 }
 
 function createTimerDisplay() {
@@ -75,9 +81,16 @@ function createTimerDisplay() {
     timerBox.style.background = 'rgba(0,0,0,0.6)';
     timerBox.style.color = '#fff';
     timerBox.style.padding = '5px 10px';
-    timerBox.style.fontSize = '20px';
+    timerBox.style.fontSize = '16px';
+    timerBox.style.fontFamily = 'Roboto, Arial, sans-serif';
     timerBox.style.borderRadius = '5px';
+    timerBox.style.boxShadow = '0 2px 5px rgba(0,0,0,0.2)';
+    timerBox.style.display = 'flex';
+    timerBox.style.alignItems = 'center';
     document.body.appendChild(timerBox);
+    
+    // Initial display
+    updateTimerDisplay();
   }
 }
 
