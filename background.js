@@ -34,10 +34,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tabId = sender.tab.id;
     const hostname = new URL(msg.url).hostname;
 
+    // If we already had a timer for this tab, store any time that might have accumulated
+    if (activeTimers[tabId] && activeTimers[tabId].isActive) {
+      const elapsed = calculateElapsedTime(activeTimers[tabId].startTime);
+      if (elapsed > 0) {
+        storeTime(activeTimers[tabId].hostname, elapsed);
+      }
+    }
+
     // Create or update timer for this tab
     activeTimers[tabId] = {
       hostname,
-      startTime: Date.now(),
+      startTime: Date.now(), // Use millisecond precision
       isActive: true
     };
   }
@@ -49,7 +57,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tabId = sender.tab.id;
     if (activeTimers[tabId] && activeTimers[tabId].isActive) {
       const timer = activeTimers[tabId];
-      const elapsed = Math.floor((Date.now() - timer.startTime) / 1000);
+      const elapsed = calculateElapsedTime(timer.startTime);
       
       if (elapsed > 0) {
         storeTime(timer.hostname, elapsed);
@@ -101,11 +109,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// Handle tab close events
+// Handle tab close events - important for accurate tracking
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (activeTimers[tabId] && activeTimers[tabId].isActive) {
     const timer = activeTimers[tabId];
-    const elapsed = Math.floor((Date.now() - timer.startTime) / 1000);
+    const elapsed = calculateElapsedTime(timer.startTime);
     
     if (elapsed > 0) {
       storeTime(timer.hostname, elapsed);
@@ -147,6 +155,13 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
   }
 });
 
+// Calculate elapsed time with millisecond precision
+function calculateElapsedTime(startTime) {
+  // Get precise number of seconds with decimal precision
+  const elapsedMs = Date.now() - startTime;
+  return elapsedMs / 1000; // Return seconds with decimal precision
+}
+
 // Sync all currently active timers to storage
 async function syncActiveTimers() {
   const promises = [];
@@ -155,7 +170,7 @@ async function syncActiveTimers() {
   for (const tabId in activeTimers) {
     const timer = activeTimers[tabId];
     if (timer && timer.isActive) {
-      const elapsed = Math.floor((now - timer.startTime) / 1000);
+      const elapsed = calculateElapsedTime(timer.startTime);
       
       if (elapsed > 0) {
         // Store the current elapsed time
@@ -172,7 +187,7 @@ async function syncActiveTimers() {
   return Promise.all(promises);
 }
 
-// Store time in persistent storage
+// Store time in persistent storage with improved precision
 function storeTime(hostname, seconds, callback) {
   chrome.storage.local.get(['sites'], ({ sites = {} }) => {
     const now = new Date();
@@ -186,10 +201,13 @@ function storeTime(hostname, seconds, callback) {
       sites[hostname][today] = 0;
     }
     
-    // Add the new time to the total
+    // Add the new time to the total - use full precision and then floor when showing
     sites[hostname][today] += seconds;
     
     // Store back to storage
     chrome.storage.local.set({ sites }, callback);
   });
 }
+
+// Add periodic sync to ensure data is saved even if user doesn't interact
+setInterval(syncActiveTimers, 30000); // Sync every 30 seconds

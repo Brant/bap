@@ -268,8 +268,11 @@ function formatDate(date) {
   return date.toISOString().split('T')[0];
 }
 
-// Format seconds to readable time
+// Format seconds to readable time with rounding to nearest second
 function formatTime(seconds) {
+  // Round to nearest second for display
+  seconds = Math.round(seconds);
+  
   if (seconds === 0) {
     return '0s';
   }

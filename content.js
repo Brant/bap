@@ -1,7 +1,8 @@
-let timerInterval;
 let displayInterval;
 let timerBox;
 let isTracking = false;
+let sessionSeconds = 0; // Track session time locally
+
 const currentHostname = new URL(location.href).hostname;
 
 // Check if the current site is in the watchlist before creating the timer
@@ -13,7 +14,7 @@ chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
     if (document.visibilityState === 'visible') {
       startTracking();
     } else {
-      updateTimerDisplay(0);
+      updateTimerDisplay();
     }
   }
 });
@@ -25,7 +26,7 @@ document.addEventListener('visibilitychange', () => {
       startTracking();
     }
   } else {
-    stopTracking();
+    pauseTracking();
   }
 });
 
@@ -40,8 +41,8 @@ function startTracking() {
   startDisplayTimer();
 }
 
-// Stop tracking time
-function stopTracking() {
+// Pause tracking time (but don't reset)
+function pauseTracking() {
   if (!isTracking) return;
   
   isTracking = false;
@@ -64,16 +65,19 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
       if (document.visibilityState === 'visible') {
         startTracking();
       } else {
-        updateTimerDisplay(0);
+        updateTimerDisplay();
       }
     } else if (!isWatched && timerBox) {
       // Site was removed from watchlist, remove timer
-      stopTracking();
+      pauseTracking();
       
       if (timerBox && timerBox.parentNode) {
         timerBox.parentNode.removeChild(timerBox);
         timerBox = null;
       }
+      
+      // Reset session time if removed from watchlist
+      sessionSeconds = 0;
     }
   }
 });
@@ -84,44 +88,24 @@ function startDisplayTimer() {
     clearInterval(displayInterval);
   }
   
-  // Update the display immediately
-  updateTabTimer();
-  
-  // Set interval to update the display every second
-  displayInterval = setInterval(updateTabTimer, 1000);
-}
-
-// Update timer from background script data
-function updateTabTimer() {
-  if (!isTracking || !timerBox) return;
-  
-  // Get the current tab session time from background
-  chrome.runtime.sendMessage({ type: 'get-tab-session-time' }, (response) => {
-    if (response && typeof response.seconds === 'number') {
-      updateTimerDisplay(response.seconds);
+  // Start the interval timer to update display and track local session time
+  displayInterval = setInterval(() => {
+    if (isTracking) {
+      sessionSeconds++;
+      updateTimerDisplay();
     }
-  });
+  }, 1000);
 }
 
-// Update the timer display with seconds
-function updateTimerDisplay(seconds) {
+// Update the timer display with local session time
+function updateTimerDisplay() {
   if (!timerBox) return;
   
-  // Get the site's total time for today
-  chrome.runtime.sendMessage({ 
-    type: 'get-site-total-time', 
-    hostname: currentHostname 
-  }, (response) => {
-    const totalTime = (response && response.totalTime) || 0;
-    
-    // Format timer with session time / total time
-    timerBox.innerHTML = `
-      <span style="font-weight: 500; margin-right: 5px;">Just Be Aware:</span>
-      <span title="Session time">${formatTime(seconds)}</span>
-      <span style="margin: 0 5px;color: rgba(255,255,255,0.7);">|</span>
-      <span title="Total today" style="color: rgba(255,255,255,0.7);">Total: ${formatTime(totalTime)}</span>
-    `;
-  });
+  // Just show the session time
+  timerBox.innerHTML = `
+    <span style="font-weight: 500; margin-right: 5px;">Just Be Aware:</span>
+    <span>${formatTime(sessionSeconds)}</span>
+  `;
 }
 
 function createTimerDisplay() {
@@ -143,8 +127,8 @@ function createTimerDisplay() {
     timerBox.style.alignItems = 'center';
     document.body.appendChild(timerBox);
     
-    // Initial display (0 seconds)
-    updateTimerDisplay(0);
+    // Initial display with current session time
+    updateTimerDisplay();
   }
 }
 
@@ -162,5 +146,5 @@ function formatTime(s) {
 
 // Handle page unload
 window.addEventListener('beforeunload', () => {
-  stopTracking();
+  pauseTracking();
 });
