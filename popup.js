@@ -14,6 +14,34 @@ chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       toggleBtn.classList.remove('remove');
     }
   });
+  
+  // Request background page to save current site tracking data if active
+  chrome.runtime.sendMessage({ type: 'sync-tracking-data' });
+});
+
+// Handle watchlist toggle button (collapse/expand)
+document.getElementById('toggle-watchlist-btn').addEventListener('click', () => {
+  const container = document.querySelector('.watchlist-container');
+  container.classList.toggle('collapsed');
+  
+  // Store collapsed state in storage
+  chrome.storage.local.get(['uiState'], ({ uiState = {} }) => {
+    uiState.watchlistCollapsed = container.classList.contains('collapsed');
+    chrome.storage.local.set({ uiState });
+  });
+});
+
+// Restore UI state (collapsed/expanded) or use default collapsed
+chrome.storage.local.get(['uiState'], ({ uiState = {} }) => {
+  // If no saved state, default to collapsed
+  if (typeof uiState.watchlistCollapsed === 'undefined') {
+    uiState.watchlistCollapsed = true;
+    chrome.storage.local.set({ uiState });
+  }
+  
+  if (uiState.watchlistCollapsed) {
+    document.querySelector('.watchlist-container').classList.add('collapsed');
+  }
 });
 
 // Toggle watchlist button
@@ -30,6 +58,7 @@ document.getElementById('toggle-btn').addEventListener('click', () => {
         toggleBtn.classList.remove('remove');
       }
       loadSummary();
+      loadWatchlist();
     });
   });
 });
@@ -57,7 +86,14 @@ function loadSummary() {
     // Get date ranges based on selected period
     const dateRange = getDateRange(activePeriod);
     
-    watchlist.forEach(site => {
+    if (watchlist.length === 0) {
+      summary.innerHTML = '<div class="empty-state">No sites in watchlist</div>';
+      document.getElementById('total-time').textContent = '0s';
+      return;
+    }
+    
+    // Sort alphabetically
+    watchlist.sort().forEach(site => {
       let siteTime = 0;
       
       // Sum up time for the selected period
@@ -67,24 +103,73 @@ function loadSummary() {
       
       totalTime += siteTime;
       
-      if (siteTime > 0) {
-        const siteElement = document.createElement('div');
-        siteElement.className = 'site';
-        siteElement.innerHTML = `
-          <div class="site-url">${site}</div>
-          <div class="site-time">${formatTime(siteTime)}</div>
-        `;
-        summary.appendChild(siteElement);
-      }
+      // Always show the site, even if no time tracked yet
+      const siteElement = document.createElement('div');
+      siteElement.className = 'site';
+      siteElement.innerHTML = `
+        <div class="site-url">${site}</div>
+        <div class="site-time">${formatTime(siteTime)}</div>
+      `;
+      summary.appendChild(siteElement);
     });
     
     // Update total time
     document.getElementById('total-time').textContent = formatTime(totalTime);
+  });
+}
+
+// Load watchlist management section
+function loadWatchlist() {
+  chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
+    const watchlistContainer = document.getElementById('watchlist');
+    watchlistContainer.innerHTML = '';
     
-    // Show message if no sites
-    if (summary.children.length === 0) {
-      summary.innerHTML = '<div class="empty-state">No activity data yet</div>';
+    if (watchlist.length === 0) {
+      watchlistContainer.innerHTML = '<div class="empty-state">No sites in watchlist</div>';
+      return;
     }
+    
+    // Sort alphabetically
+    watchlist.sort().forEach(site => {
+      const itemElement = document.createElement('div');
+      itemElement.className = 'watchlist-item';
+      itemElement.innerHTML = `
+        <div class="site-url">${site}</div>
+        <button class="remove-btn" data-site="${site}">Remove</button>
+      `;
+      watchlistContainer.appendChild(itemElement);
+    });
+    
+    // Add event listeners to remove buttons
+    document.querySelectorAll('.remove-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const site = e.target.dataset.site;
+        removeFromWatchlist(site);
+      });
+    });
+  });
+}
+
+// Remove a site from the watchlist
+function removeFromWatchlist(site) {
+  chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
+    const updatedList = watchlist.filter(s => s !== site);
+    
+    chrome.storage.local.set({ watchlist: updatedList }, () => {
+      // Update current site button if needed
+      chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+        const currentUrl = new URL(tabs[0].url).hostname;
+        if (currentUrl === site) {
+          const toggleBtn = document.getElementById('toggle-btn');
+          toggleBtn.textContent = 'Add to Watchlist';
+          toggleBtn.classList.remove('remove');
+        }
+      });
+      
+      // Reload the lists
+      loadSummary();
+      loadWatchlist();
+    });
   });
 }
 
@@ -140,6 +225,28 @@ function formatTime(seconds) {
   return `${hours}h ${remainingMinutes}m`;
 }
 
-// Load summary on popup open
+// Set up storage change listener to refresh data when tracking updates happen
+chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === 'local' && (changes.sites || changes.watchlist)) {
+    loadSummary();
+    
+    if (changes.watchlist) {
+      loadWatchlist();
+    }
+  }
+});
+
+// Initialize on popup open
+requestLatestData();
 loadSummary();
+loadWatchlist();
+
+// Request latest tracking data from background page
+function requestLatestData() {
+  chrome.runtime.sendMessage({ type: 'get-latest-data' }, (response) => {
+    if (response && response.updated) {
+      loadSummary();
+    }
+  });
+}
   
