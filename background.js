@@ -1,209 +1,250 @@
-let watchlist = {};
-let activeTimers = {};
-let activeHostnames = {}; // Track which hostnames are currently being tracked
+// Single source of truth for timer state
+const timerState = {
+  activeTimers: new Map(), // Map of tabId -> timer info
+  lastSyncTime: Date.now(),
+  isSyncing: false,
+  pageStates: new Map() // Map of tabId -> page state
+};
+
+// Page states
+const PageState = {
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+  PAUSED: 'paused'
+};
 
 // Initial setup
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ sites: {}, watchlist: [] });
+  chrome.storage.local.set({ 
+    sites: {}, 
+    watchlist: [],
+    lastSyncTimestamp: Date.now()
+  });
 });
 
-// Listen for messages from content scripts and popup
+// Handle messages from content scripts and popup
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'toggle-watchlist') {
-    chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
-      const isInList = watchlist.includes(msg.url);
-      const updatedList = isInList
-        ? watchlist.filter(site => site !== msg.url)
-        : [...watchlist, msg.url];
-
-      chrome.storage.local.set({ watchlist: updatedList }, () => {
-        sendResponse({ 
-          status: 'updated', 
-          watchlist: updatedList,
-          isWatched: !isInList 
-        });
-      });
-    });
+    handleWatchlistToggle(msg.url, sendResponse);
     return true;
   }
 
-  // Start tracking a new tab or update an existing one
   if (msg.type === 'start-tracking') {
-    if (!sender || !sender.tab) return;
-    
-    const tabId = sender.tab.id;
-    const hostname = new URL(msg.url).hostname;
-
-    // If we already had a timer for this tab, store any time that might have accumulated
-    if (activeTimers[tabId]) {
-      if (activeTimers[tabId].isActive && activeTimers[tabId].startTime) {
-        const elapsed = calculateElapsedTime(activeTimers[tabId].startTime);
-        if (elapsed > 0) {
-          storeTime(activeTimers[tabId].hostname, elapsed);
-        }
-      }
-    }
-
-    // Create or update timer for this tab
-    activeTimers[tabId] = {
-      hostname,
-      startTime: Date.now(),
-      isActive: true
-    };
-    
-    // Ensure this hostname is stored in sites even if there's no time yet
-    ensureHostnameInStorage(hostname);
-    
+    if (!sender?.tab?.id) return;
+    handleStartTracking(sender.tab.id, msg.url);
     sendResponse({ status: 'tracking-started' });
   }
 
-  // Stop tracking when tab becomes inactive
   if (msg.type === 'stop-tracking') {
-    if (!sender || !sender.tab) return;
-    
-    const tabId = sender.tab.id;
-    if (activeTimers[tabId] && activeTimers[tabId].isActive) {
-      const timer = activeTimers[tabId];
-      const elapsed = calculateElapsedTime(timer.startTime);
-      
-      if (elapsed > 0) {
-        storeTime(timer.hostname, elapsed);
-      }
-      
-      // Mark as inactive and clear start time
-      timer.isActive = false;
-      timer.startTime = null;
-      
-      sendResponse({ status: 'tracking-stopped' });
-    }
+    if (!sender?.tab?.id) return;
+    handleStopTracking(sender.tab.id);
+    sendResponse({ status: 'tracking-stopped' });
   }
-  
-  // Special message just to force sync all active timers (used by popup)
+
   if (msg.type === 'sync-all-timers') {
     syncActiveTimers().then(() => {
       sendResponse({ status: 'synced' });
     });
     return true;
   }
-  
-  // Get latest data before displaying in popup
+
   if (msg.type === 'get-latest-data') {
     syncActiveTimers().then(() => {
       sendResponse({ updated: true });
     });
     return true;
   }
+
+  if (msg.type === 'get-timer-state') {
+    if (!sender?.tab?.id) return;
+    const timerInfo = timerState.activeTimers.get(sender.tab.id);
+    sendResponse({ 
+      status: 'success',
+      timerInfo: timerInfo ? {
+        elapsed: timerInfo.totalElapsed + (timerInfo.isActive ? calculateElapsedTime(timerInfo.startTime) : 0),
+        isActive: timerInfo.isActive
+      } : null
+    });
+    return true;
+  }
 });
 
-// Ensure a hostname exists in storage
-function ensureHostnameInStorage(hostname) {
-  chrome.storage.local.get(['sites'], ({ sites = {} }) => {
-    const today = new Date().toISOString().split('T')[0];
-    
-    // Initialize data structure if needed
-    if (!sites[hostname]) {
-      sites[hostname] = {};
-    }
-    if (sites[hostname][today] === undefined) {
-      sites[hostname][today] = 0;
-      chrome.storage.local.set({ sites });
-    }
+// Handle watchlist toggling
+async function handleWatchlistToggle(url, sendResponse) {
+  const { watchlist = [] } = await chrome.storage.local.get(['watchlist']);
+  const isInList = watchlist.includes(url);
+  const updatedList = isInList
+    ? watchlist.filter(site => site !== url)
+    : [...watchlist, url];
+
+  await chrome.storage.local.set({ watchlist: updatedList });
+  sendResponse({ 
+    status: 'updated', 
+    watchlist: updatedList,
+    isWatched: !isInList 
   });
+}
+
+// Handle starting tracking for a tab
+function handleStartTracking(tabId, url) {
+  const hostname = new URL(url).hostname;
+  
+  // Store any existing time for this tab
+  if (timerState.activeTimers.has(tabId)) {
+    const existingTimer = timerState.activeTimers.get(tabId);
+    if (existingTimer.isActive && existingTimer.startTime) {
+      const elapsed = calculateElapsedTime(existingTimer.startTime);
+      existingTimer.totalElapsed += elapsed;
+      storeTime(existingTimer.hostname, elapsed);
+    }
+  }
+
+  // Create or update timer
+  const existingTimer = timerState.activeTimers.get(tabId);
+  timerState.activeTimers.set(tabId, {
+    hostname,
+    startTime: Date.now(),
+    isActive: true,
+    lastUpdateTime: Date.now(),
+    totalElapsed: existingTimer?.totalElapsed || 0
+  });
+
+  timerState.pageStates.set(tabId, PageState.ACTIVE);
+  ensureHostnameInStorage(hostname);
+}
+
+// Handle stopping tracking for a tab
+function handleStopTracking(tabId) {
+  const timer = timerState.activeTimers.get(tabId);
+  if (timer?.isActive) {
+    const elapsed = calculateElapsedTime(timer.startTime);
+    if (elapsed > 0) {
+      timer.totalElapsed += elapsed;
+      storeTime(timer.hostname, elapsed);
+    }
+    
+    timer.isActive = false;
+    timer.startTime = null;
+    timer.lastUpdateTime = Date.now();
+  }
+  
+  timerState.pageStates.set(tabId, PageState.INACTIVE);
 }
 
 // Handle tab close events
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (activeTimers[tabId] && activeTimers[tabId].isActive) {
-    const timer = activeTimers[tabId];
+  const timer = timerState.activeTimers.get(tabId);
+  if (timer?.isActive) {
     const elapsed = calculateElapsedTime(timer.startTime);
-    
     if (elapsed > 0) {
+      timer.totalElapsed += elapsed;
       storeTime(timer.hostname, elapsed);
     }
-    
-    delete activeTimers[tabId];
   }
+  
+  timerState.activeTimers.delete(tabId);
+  timerState.pageStates.delete(tabId);
 });
 
-// Handle tab switching (activated)
+// Handle tab switching
 chrome.tabs.onActivated.addListener((activeInfo) => {
-  const tabId = activeInfo.tabId;
+  const activeTabId = activeInfo.tabId;
   
-  // Pause all other timers 
-  for (const id in activeTimers) {
-    if (id != tabId && activeTimers[id].isActive) {
-      const timer = activeTimers[id];
+  // Pause all other timers
+  for (const [tabId, timer] of timerState.activeTimers.entries()) {
+    if (tabId !== activeTabId && timer.isActive) {
       const elapsed = calculateElapsedTime(timer.startTime);
-      
       if (elapsed > 0) {
+        timer.totalElapsed += elapsed;
         storeTime(timer.hostname, elapsed);
       }
       
-      // Mark as paused
       timer.isActive = false;
       timer.startTime = null;
+      timer.lastUpdateTime = Date.now();
+      timerState.pageStates.set(tabId, PageState.PAUSED);
     }
+  }
+  
+  // Update active tab state
+  if (timerState.activeTimers.has(activeTabId)) {
+    const timer = timerState.activeTimers.get(activeTabId);
+    timer.isActive = true;
+    timer.startTime = Date.now();
+    timerState.pageStates.set(activeTabId, PageState.ACTIVE);
   }
 });
 
-// Calculate elapsed time in seconds with millisecond precision
+// Calculate elapsed time with millisecond precision
 function calculateElapsedTime(startTime) {
   if (!startTime) return 0;
-  const elapsedMs = Date.now() - startTime;
-  return elapsedMs / 1000; // Return seconds with decimal precision
+  return (Date.now() - startTime) / 1000;
 }
 
-// Sync all currently active timers to storage
-async function syncActiveTimers() {
-  const promises = [];
-  const now = Date.now();
+// Ensure hostname exists in storage
+async function ensureHostnameInStorage(hostname) {
+  const { sites = {} } = await chrome.storage.local.get(['sites']);
+  const today = new Date().toISOString().split('T')[0];
   
-  for (const tabId in activeTimers) {
-    const timer = activeTimers[tabId];
-    if (timer && timer.isActive && timer.startTime) {
-      const elapsed = calculateElapsedTime(timer.startTime);
-      
-      if (elapsed > 0) {
-        // Store the current elapsed time
-        promises.push(new Promise(resolve => {
-          storeTime(timer.hostname, elapsed, resolve);
-        }));
-        
-        // Reset the start time to now
-        timer.startTime = now;
+  if (!sites[hostname]) {
+    sites[hostname] = {};
+  }
+  if (sites[hostname][today] === undefined) {
+    sites[hostname][today] = 0;
+    await chrome.storage.local.set({ sites });
+  }
+}
+
+// Store time in persistent storage
+async function storeTime(hostname, seconds) {
+  if (!hostname || seconds <= 0) return;
+  
+  const { sites = {} } = await chrome.storage.local.get(['sites']);
+  const today = new Date().toISOString().split('T')[0];
+  
+  if (!sites[hostname]) {
+    sites[hostname] = {};
+  }
+  if (sites[hostname][today] === undefined) {
+    sites[hostname][today] = 0;
+  }
+  
+  sites[hostname][today] += seconds;
+  await chrome.storage.local.set({ sites });
+}
+
+// Sync all active timers to storage
+async function syncActiveTimers() {
+  if (timerState.isSyncing) return;
+  timerState.isSyncing = true;
+  
+  try {
+    const now = Date.now();
+    const promises = [];
+    
+    for (const [tabId, timer] of timerState.activeTimers.entries()) {
+      if (timer.isActive && timer.startTime) {
+        const elapsed = calculateElapsedTime(timer.startTime);
+        if (elapsed > 0) {
+          timer.totalElapsed += elapsed;
+          promises.push(storeTime(timer.hostname, elapsed));
+          timer.startTime = now;
+          timer.lastUpdateTime = now;
+        }
       }
     }
+    
+    await Promise.all(promises);
+    timerState.lastSyncTime = now;
+  } finally {
+    timerState.isSyncing = false;
   }
-  
-  return Promise.all(promises);
 }
 
-// Store time in persistent storage with improved precision
-function storeTime(hostname, seconds, callback) {
-  if (!hostname || seconds <= 0) {
-    if (callback) callback();
-    return;
-  }
-  
-  chrome.storage.local.get(['sites'], ({ sites = {} }) => {
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
-    
-    // Initialize data structure if needed
-    if (!sites[hostname]) {
-      sites[hostname] = {};
-    }
-    if (sites[hostname][today] === undefined) {
-      sites[hostname][today] = 0;
-    }
-    
-    // Add the new time to the total
-    sites[hostname][today] += seconds;
-    
-    // Store back to storage
-    chrome.storage.local.set({ sites }, callback);
-  });
-}
+// Periodic sync to ensure data is saved regularly
+setInterval(syncActiveTimers, 1000); // Sync every second
 
-// Add periodic sync to ensure data is saved regularly
-setInterval(syncActiveTimers, 5000); // Sync every 5 seconds
+// Handle system wake/sleep events
+chrome.runtime.onSuspend.addListener(() => {
+  syncActiveTimers();
+});

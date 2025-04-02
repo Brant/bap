@@ -1,91 +1,74 @@
 let displayInterval;
 let timerBox;
-let isTracking = false;
-let sessionSeconds = 0; // Track session time locally
-let isWindowFocused = true; // Track browser window focus state
-let lastTrackingTime = 0; // Last time tracking was active
+let isDisplaying = false;
+let lastUpdateTime = 0;
+let currentElapsed = 0;
 
 const currentHostname = new URL(location.href).hostname;
 
-// Add window focus/blur event listeners
-window.addEventListener('focus', () => {
-  isWindowFocused = true;
-  // Resume tracking if document is visible and window is now focused
-  if (document.visibilityState === 'visible' && timerBox && !isTracking) {
-    startTracking();
-  }
-});
-
-window.addEventListener('blur', () => {
-  // Check if the blur event might be from opening our extension popup
-  // We'll temporarily delay the pause to see if a focus event follows quickly
-  setTimeout(() => {
-    if (!isWindowFocused) return; // Already handled by a focus event
-    
-    isWindowFocused = false;
-    pauseTracking();
-  }, 300); // Short delay to catch quick focus/blur from popup
-});
-
-// Check if the current site is in the watchlist before creating the timer
+// Initialize display and start tracking if site is in watchlist
 chrome.storage.local.get(['watchlist'], ({ watchlist = [] }) => {
   if (watchlist.includes(currentHostname)) {
     createTimerDisplay();
-    
-    // Only start timer if document is visible AND window is focused
-    if (document.visibilityState === 'visible' && isWindowFocused) {
-      startTracking();
-    } else {
-      updateTimerDisplay();
+    startDisplay();
+    // Start tracking immediately if the page is visible
+    if (document.visibilityState === 'visible') {
+      chrome.runtime.sendMessage({ 
+        type: 'start-tracking', 
+        url: location.href 
+      });
     }
   }
 });
 
-// Monitor visibility changes
+// Handle visibility changes
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    // Only start tracking if the window is also focused
-    if (timerBox && !isTracking && isWindowFocused) {
-      startTracking();
-    }
+    startDisplay();
+    // Tell background to start tracking
+    chrome.runtime.sendMessage({ 
+      type: 'start-tracking', 
+      url: location.href 
+    });
   } else {
-    pauseTracking();
+    stopDisplay();
+    // Tell background to stop tracking
+    chrome.runtime.sendMessage({ 
+      type: 'stop-tracking', 
+      url: location.href 
+    });
   }
 });
 
-// Start tracking time
-function startTracking() {
-  if (isTracking) return; // Prevent double-starts
+// Start display updates
+function startDisplay() {
+  if (isDisplaying) return;
   
-  isTracking = true;
-  lastTrackingTime = Date.now();
+  isDisplaying = true;
+  lastUpdateTime = Date.now();
   
-  // Send message to background script to start tracking
-  chrome.runtime.sendMessage({ type: 'start-tracking', url: location.href });
+  // Get initial state from background
+  chrome.runtime.sendMessage({ type: 'get-timer-state' }, (response) => {
+    if (response?.status === 'success' && response.timerInfo) {
+      currentElapsed = response.timerInfo.elapsed;
+      updateTimerDisplay();
+    }
+  });
   
   // Start display update interval
   startDisplayTimer();
 }
 
-// Pause tracking time (but don't reset)
-function pauseTracking() {
-  if (!isTracking) return;
+// Stop display updates
+function stopDisplay() {
+  if (!isDisplaying) return;
   
-  // Calculate time since last update and add to session
-  if (lastTrackingTime > 0) {
-    const elapsed = Math.floor((Date.now() - lastTrackingTime) / 1000);
-    sessionSeconds += elapsed;
-  }
-  
-  isTracking = false;
+  isDisplaying = false;
   clearInterval(displayInterval);
   displayInterval = null;
-  lastTrackingTime = 0;
+  lastUpdateTime = 0;
   
-  // Tell background to stop tracking
-  chrome.runtime.sendMessage({ type: 'stop-tracking', url: location.href });
-  
-  // Update display one last time before pausing
+  // Update display one last time
   updateTimerDisplay();
 }
 
@@ -96,26 +79,27 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
     const isWatched = newWatchlist.includes(currentHostname);
     
     if (isWatched && !timerBox) {
-      // Site was added to watchlist, create timer
       createTimerDisplay();
-      
-      // Only start tracking if document is visible AND window is focused
-      if (document.visibilityState === 'visible' && isWindowFocused) {
-        startTracking();
-      } else {
-        updateTimerDisplay();
+      startDisplay();
+      // Tell background to start tracking if page is visible
+      if (document.visibilityState === 'visible') {
+        chrome.runtime.sendMessage({ 
+          type: 'start-tracking', 
+          url: location.href 
+        });
       }
     } else if (!isWatched && timerBox) {
-      // Site was removed from watchlist, remove timer
-      pauseTracking();
-      
-      if (timerBox && timerBox.parentNode) {
+      stopDisplay();
+      // Tell background to stop tracking
+      chrome.runtime.sendMessage({ 
+        type: 'stop-tracking', 
+        url: location.href 
+      });
+      if (timerBox.parentNode) {
         timerBox.parentNode.removeChild(timerBox);
         timerBox = null;
       }
-      
-      // Reset session time if removed from watchlist
-      sessionSeconds = 0;
+      currentElapsed = 0;
     }
   }
 });
@@ -126,35 +110,30 @@ function startDisplayTimer() {
     clearInterval(displayInterval);
   }
   
-  // Initialize last tracking time if needed
-  if (lastTrackingTime === 0) {
-    lastTrackingTime = Date.now();
-  }
-  
-  // Start the interval timer to update display
   displayInterval = setInterval(() => {
-    if (isTracking) {
-      // Calculate time since last update
-      const currentElapsed = Math.floor((Date.now() - lastTrackingTime) / 1000);
-      // Update display with session time + current elapsed time
-      updateTimerDisplay(sessionSeconds + currentElapsed);
+    if (isDisplaying) {
+      // Get latest state from background
+      chrome.runtime.sendMessage({ type: 'get-timer-state' }, (response) => {
+        if (response?.status === 'success' && response.timerInfo) {
+          currentElapsed = response.timerInfo.elapsed;
+          updateTimerDisplay();
+        }
+      });
     }
   }, 1000);
 }
 
-// Update the timer display with session time
-function updateTimerDisplay(timeToShow = sessionSeconds) {
+// Update the timer display
+function updateTimerDisplay() {
   if (!timerBox) return;
   
-  // Show the session time
   timerBox.innerHTML = `
     <span style="font-weight: 500; margin-right: 5px;">Just Be Aware:</span>
-    <span>${formatTime(timeToShow)}</span>
+    <span>${formatTime(currentElapsed)}</span>
   `;
 }
 
 function createTimerDisplay() {
-  // Only create if it doesn't exist already
   if (!timerBox) {
     timerBox = document.createElement('div');
     timerBox.style.position = 'fixed';
@@ -172,7 +151,7 @@ function createTimerDisplay() {
     timerBox.style.alignItems = 'center';
     document.body.appendChild(timerBox);
     
-    // Initial display with current session time
+    // Initial display
     updateTimerDisplay();
   }
 }
@@ -180,7 +159,7 @@ function createTimerDisplay() {
 function formatTime(s) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
+  const sec = Math.floor(s % 60);
   
   if (h > 0) {
     return `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
@@ -191,5 +170,10 @@ function formatTime(s) {
 
 // Handle page unload
 window.addEventListener('beforeunload', () => {
-  pauseTracking();
+  stopDisplay();
+  // Tell background to stop tracking
+  chrome.runtime.sendMessage({ 
+    type: 'stop-tracking', 
+    url: location.href 
+  });
 });
