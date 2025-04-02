@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Just Be Aware</h1>
+      <p class="subtitle">Productivity Tracker</p>
+    </header>
+    
+    <div class="content">
+      <div class="current-site">
+        <div class="site-info">
+          <div id="current-url">Current site</div>
+          <button id="toggle-btn" class="primary-btn">Add to Watchlist</button>
+        </div>
+      </div>
+
+      <div class="stats-container">
+        <div class="stats-header">
+          <h2>Your Activity</h2>
+          <div class="time-selector">
+            <button class="time-btn active" data-period="today">Today</button>
+            <button class="time-btn" data-period="week">Week</button>
+            <button class="time-btn" data-period="month">Month</button>
+          </div>
+        </div>
+        
+        <div id="summary" class="summary-list"></div>
+      </div>
+    </div>
+    
+    <footer>
+      <div class="total-time">
+        <span>Total Today:</span>
+        <span id="total-time">0m 0s</span>
+      </div>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
