@@ -15,8 +15,8 @@ chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     }
   });
   
-  // Request background page to save current site tracking data if active
-  chrome.runtime.sendMessage({ type: 'sync-tracking-data' });
+  // Request background page to save current site tracking data
+  chrome.runtime.sendMessage({ type: 'get-latest-data' });
 });
 
 // Handle watchlist toggle button (collapse/expand)
@@ -76,8 +76,21 @@ timeBtns.forEach(btn => {
   });
 });
 
+// Request latest tracking data from background page and return a promise
+function requestLatestData() {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'get-latest-data' }, (response) => {
+      resolve(response && response.updated);
+    });
+  });
+}
+
 // Load summary data
-function loadSummary() {
+async function loadSummary() {
+  // First ensure all current tracking data is saved
+  await requestLatestData();
+  
+  // Now get the updated data
   chrome.storage.local.get(['sites', 'watchlist'], ({ sites = {}, watchlist = [] }) => {
     const summary = document.getElementById('summary');
     summary.innerHTML = '';
@@ -92,29 +105,71 @@ function loadSummary() {
       return;
     }
     
-    // Sort alphabetically
-    watchlist.sort().forEach(site => {
+    // Create an array to store sites with their aggregated times
+    const siteData = [];
+    
+    // Calculate time for each site
+    watchlist.forEach(site => {
       let siteTime = 0;
       
-      // Sum up time for the selected period
+      // Sum up time for the selected period across all dates
       for (const date of dateRange) {
-        siteTime += (sites[site]?.[date] || 0);
+        if (sites[site] && sites[site][date]) {
+          siteTime += sites[site][date];
+        }
       }
       
+      // Add to total time
       totalTime += siteTime;
       
-      // Always show the site, even if no time tracked yet
+      // Store site data for display - skip sites with zero time for non-today views
+      if (siteTime > 0 || activePeriod === 'today') {
+        siteData.push({
+          url: site,
+          time: siteTime
+        });
+      }
+    });
+    
+    // Sort by time spent (descending) then alphabetically if times are equal
+    siteData.sort((a, b) => {
+      if (b.time !== a.time) {
+        return b.time - a.time; // Most time first
+      }
+      return a.url.localeCompare(b.url); // Alphabetical if tied
+    });
+    
+    // If no sites have time yet, show empty state
+    if (siteData.length === 0) {
+      summary.innerHTML = '<div class="empty-state">No activity data yet</div>';
+      document.getElementById('total-time').textContent = '0s';
+      return;
+    }
+    
+    // Display each site
+    siteData.forEach(site => {
       const siteElement = document.createElement('div');
       siteElement.className = 'site';
       siteElement.innerHTML = `
-        <div class="site-url">${site}</div>
-        <div class="site-time">${formatTime(siteTime)}</div>
+        <div class="site-url">${site.url}</div>
+        <div class="site-time">${formatTime(site.time)}</div>
       `;
       summary.appendChild(siteElement);
     });
     
     // Update total time
     document.getElementById('total-time').textContent = formatTime(totalTime);
+    
+    // Update the time period label
+    let periodLabel = 'Today';
+    if (activePeriod === 'week') periodLabel = 'This Week';
+    if (activePeriod === 'month') periodLabel = 'This Month';
+    if (activePeriod === 'year') periodLabel = 'This Year';
+    
+    const totalTimeLabel = document.querySelector('.total-time span:first-child');
+    if (totalTimeLabel) {
+      totalTimeLabel.textContent = `Total ${periodLabel}:`;
+    }
   });
 }
 
@@ -196,6 +251,13 @@ function getDateRange(period) {
         dates.push(formatDate(date));
       }
       break;
+    case 'year':
+      for (let i = 0; i < 365; i++) {
+        const date = new Date(today);
+        date.setDate(today.getDate() - i);
+        dates.push(formatDate(date));
+      }
+      break;
   }
   
   return dates;
@@ -208,6 +270,10 @@ function formatDate(date) {
 
 // Format seconds to readable time
 function formatTime(seconds) {
+  if (seconds === 0) {
+    return '0s';
+  }
+  
   if (seconds < 60) {
     return `${seconds}s`;
   }
@@ -222,7 +288,14 @@ function formatTime(seconds) {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   
-  return `${hours}h ${remainingMinutes}m`;
+  if (hours < 24) {
+    return `${hours}h ${remainingMinutes}m`;
+  }
+  
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  
+  return `${days}d ${remainingHours}h ${remainingMinutes}m`;
 }
 
 // Set up storage change listener to refresh data when tracking updates happen
@@ -236,17 +309,37 @@ chrome.storage.onChanged.addListener((changes, namespace) => {
   }
 });
 
-// Initialize on popup open
-requestLatestData();
-loadSummary();
-loadWatchlist();
-
-// Request latest tracking data from background page
-function requestLatestData() {
-  chrome.runtime.sendMessage({ type: 'get-latest-data' }, (response) => {
-    if (response && response.updated) {
+// Add year option to time period buttons if not already present
+function ensureYearOption() {
+  const timeSelector = document.querySelector('.time-selector');
+  if (!timeSelector) return;
+  
+  // Check if year button already exists
+  if (!document.querySelector('.time-btn[data-period="year"]')) {
+    const yearBtn = document.createElement('button');
+    yearBtn.className = 'time-btn';
+    yearBtn.dataset.period = 'year';
+    yearBtn.textContent = 'Year';
+    
+    yearBtn.addEventListener('click', () => {
+      document.querySelectorAll('.time-btn').forEach(b => b.classList.remove('active'));
+      yearBtn.classList.add('active');
+      activePeriod = 'year';
       loadSummary();
-    }
-  });
+    });
+    
+    timeSelector.appendChild(yearBtn);
+  }
 }
+
+// Initialize popup
+async function initializePopup() {
+  ensureYearOption();
+  await requestLatestData();
+  loadSummary();
+  loadWatchlist();
+}
+
+// Start initialization when popup opens
+initializePopup();
   
