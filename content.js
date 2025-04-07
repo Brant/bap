@@ -230,6 +230,7 @@ function updateTimerDisplay() {
 
 function createTimerDisplay() {
   if (!timerBox) {
+
     timerBox = document.createElement('div');
     timerBox.style.position = 'fixed';
     timerBox.style.top = '10px';
@@ -244,7 +245,19 @@ function createTimerDisplay() {
     timerBox.style.boxShadow = '0 2px 5px rgba(0,0,0,0.3)';
     timerBox.style.display = 'flex';
     timerBox.style.alignItems = 'center';
+    timerBox.style.transition = 'opacity 0.3s ease';
+    timerBox.style.pointerEvents = 'none';
+
     document.body.appendChild(timerBox);
+    
+    // Add mouse events for fading
+    timerBox.addEventListener('mouseover', () => {
+      timerBox.style.opacity = '0.0';
+    });
+    
+    timerBox.addEventListener('mouseout', () => {
+      timerBox.style.opacity = '1';
+    });
     
     // Initial display
     updateTimerDisplay();
