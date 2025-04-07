@@ -229,40 +229,88 @@ function removeFromWatchlist(site) {
   });
 }
 
-// Get array of dates for the selected time period
+
 function getDateRange(period) {
   const dates = [];
   const today = new Date();
-  
+
+  let start;
+
   switch (period) {
     case 'today':
       dates.push(formatDate(today));
       break;
+
     case 'week':
-      for (let i = 0; i < 7; i++) {
-        const date = new Date(today);
-        date.setDate(today.getDate() - i);
-        dates.push(formatDate(date));
+      // Start on Monday of the current week
+      start = new Date(today);
+      const dayOfWeek = start.getDay(); // 0 (Sun) to 6 (Sat)
+      const diffToMonday = (dayOfWeek + 6) % 7; // shift so Monday is 0
+      start.setDate(today.getDate() - diffToMonday);
+      while (start <= today) {
+        dates.push(formatDate(new Date(start)));
+        start.setDate(start.getDate() + 1);
       }
       break;
+
     case 'month':
-      for (let i = 0; i < 30; i++) {
-        const date = new Date(today);
-        date.setDate(today.getDate() - i);
-        dates.push(formatDate(date));
+      // Start on the 1st of the current month
+      start = new Date(today.getFullYear(), today.getMonth(), 1);
+      while (start <= today) {
+        dates.push(formatDate(new Date(start)));
+        start.setDate(start.getDate() + 1);
       }
       break;
+
     case 'year':
-      for (let i = 0; i < 365; i++) {
-        const date = new Date(today);
-        date.setDate(today.getDate() - i);
-        dates.push(formatDate(date));
+      // Start on January 1st of the current year
+      start = new Date(today.getFullYear(), 0, 1);
+      while (start <= today) {
+        dates.push(formatDate(new Date(start)));
+        start.setDate(start.getDate() + 1);
       }
       break;
   }
-  
+
   return dates;
 }
+
+
+
+// // Get array of dates for the selected time period
+// function getDateRange(period) {
+//   const dates = [];
+//   const today = new Date();
+  
+//   switch (period) {
+//     case 'today':
+//       dates.push(formatDate(today));
+//       break;
+//     case 'week':
+//       for (let i = 0; i < 7; i++) {
+//         const date = new Date(today);
+//         date.setDate(today.getDate() - i);
+//         dates.push(formatDate(date));
+//       }
+//       break;
+//     case 'month':
+//       for (let i = 0; i < 30; i++) {
+//         const date = new Date(today);
+//         date.setDate(today.getDate() - i);
+//         dates.push(formatDate(date));
+//       }
+//       break;
+//     case 'year':
+//       for (let i = 0; i < 365; i++) {
+//         const date = new Date(today);
+//         date.setDate(today.getDate() - i);
+//         dates.push(formatDate(date));
+//       }
+//       break;
+//   }
+  
+//   return dates;
+// }
 
 // Format date to YYYY-MM-DD
 function formatDate(date) {
